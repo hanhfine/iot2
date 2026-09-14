@@ -6,10 +6,14 @@ rồi **chọn ra một giao thức** có căn cứ (ma trận tiêu chí + tr�
 Sản phẩm gồm 3 lệnh, chạy theo thứ tự:
 
 ```bash
-python compare.py --all --chart    # 3 giao thức × 6 môi trường không dây + 5 biểu đồ
+python compare.py --all --chart    # 18 tổ hợp (3 giao thức × 6 môi trường) — vài phút
 python decide.py                   # chấm điểm theo tiêu chí đã chốt -> công bố giao thức chọn
 python demo.py                     # bản demo tinh của giao thức vừa chọn (cho người thuyết trình)
 ```
+
+> **Người tiếp nhận repo** (người 2): đọc [`docs/cho-nguoi-2.md`](docs/cho-nguoi-2.md) —
+> bàn giao trạng thái, việc cần làm tiếp, cách thêm giao thức/công nghệ mới, quy ước bắt buộc
+> và các lỗi thường gặp.
 
 ---
 
