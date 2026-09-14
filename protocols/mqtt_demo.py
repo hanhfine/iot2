@@ -243,9 +243,11 @@ def run(
             time.sleep(config.CYCLE_INTERVAL)
 
         # -------------------------------------- đo độ trễ lệnh KHÔNG hẹn trước
-        report.push_latency_ms, report.push_cost_bytes = _measure_push(
-            device, host, port, profile, link_profile
-        )
+        (
+            report.push_latency_ms,
+            report.push_cost_bytes,
+            report.push_samples_ms,
+        ) = _measure_push(device, host, port, profile, link_profile)
         return report
 
     finally:
@@ -259,24 +261,14 @@ def run(
             broker_proc.stop()
 
 
-def _measure_push(device, host: str, port: int, profile, link_profile: str) -> tuple[float, int]:
-    """Đo độ trễ nhận lệnh đẩy xuống — đây là thế mạnh của MQTT.
+def _mot_lan_push(device, pusher, link_profile: str) -> float:
+    """MỘT lần đo: dashboard publish lệnh, chờ thiết bị nhận, trả về ms.
 
-    Kịch bản giống hệt HTTP: dashboard bấm 'bật bơm' lúc thiết bị không
-    hỏi gì. Khác biệt: MQTT đẩy thẳng qua kết nối thường trực, thiết bị
-    nhận ngay. Không tốn byte polling.
-
-    CÁCH ĐO ĐÚNG (đã sửa một lỗi thật):
-        Mốc t0 phải là lúc dashboard PUBLISH, không phải lúc thiết bị bắt
-        đầu chờ. Nếu lấy mốc lúc bắt đầu chờ thì toàn bộ thời gian nằm im
-        chờ đợi bị cộng vào -> MQTT bị chấm oan ~200ms. Cả hai mốc dùng
-        chung perf_counter trong cùng tiến trình nên trừ nhau được.
+    CÁCH ĐO ĐÚNG: mốc t0 phải là lúc dashboard PUBLISH, không phải lúc thiết
+    bị bắt đầu chờ. Nếu lấy mốc lúc bắt đầu chờ thì toàn bộ thời gian nằm im
+    chờ đợi bị cộng vào -> MQTT bị chấm oan ~200ms (lỗi đã gặp ở bước 3).
+    Cả hai mốc dùng chung perf_counter trong cùng tiến trình nên trừ nhau được.
     """
-    pusher = mqtt.Client(CallbackAPIVersion.VERSION2, client_id="dashboard_push")
-    pusher.connect(host, port, 60)
-    pusher.loop_start()
-    time.sleep(0.3)
-
     # Thiết bị vào trạng thái chờ lệnh
     device._command_event.clear()
     device.last_command = None
@@ -293,17 +285,44 @@ def _measure_push(device, host: str, port: int, profile, link_profile: str) -> t
     )
 
     got = device._command_event.wait(timeout=5.0)
-    latency = (device.command_recv_at - t_publish) * 1000.0 if got else 5000.0
+    return (device.command_recv_at - t_publish) * 1000.0 if got else 5000.0
 
-    pusher.loop_stop()
-    pusher.disconnect()
 
+def _measure_push(device, host: str, port: int, profile, link_profile: str
+                  ) -> tuple[float, int, list[float]]:
+    """Đo độ trễ nhận lệnh đẩy xuống — thế mạnh của MQTT.
+
+    Kịch bản giống hệt HTTP: dashboard bấm 'bật bơm' lúc thiết bị không hỏi
+    gì. Khác biệt: MQTT đẩy thẳng qua kết nối thường trực, thiết bị nhận
+    ngay, và không tốn byte polling.
+
+    Trả về ``(do_tre_ms, byte_polling, tat_ca_mau)``.
+
+    Vì sao đo nhiều lần: đây là sự kiện cỡ mili-giây. Một mẫu duy nhất chỉ
+    cần máy bận một nhịp là ra vài chục ms, đủ để kết luận sai (đã gặp: một
+    mẫu 57ms trong khi các mẫu khác ~1ms). Nhiễu hệ thống chỉ làm phép đo
+    CHẬM ĐI nên lấy mẫu nhỏ nhất; mọi mẫu vẫn được lưu lại để kiểm chứng.
+    """
+    pusher = mqtt.Client(CallbackAPIVersion.VERSION2, client_id="dashboard_push")
+    pusher.connect(host, port, 60)
+    pusher.loop_start()
+    time.sleep(0.3)
+    try:
+        mau = [
+            _mot_lan_push(device, pusher, link_profile)
+            for _ in range(config.PUSH_SAMPLES)
+        ]
+    finally:
+        pusher.loop_stop()
+        pusher.disconnect()
+
+    latency = min(mau)
     if link_profile != "ideal":
         latency += profile.transmit_delay_ms(32)
 
     # MQTT không tốn byte polling — kết nối thường trực chỉ cần keepalive
     # PINGREQ/PINGRESP 2 byte mỗi 60s, coi như không đáng kể mỗi chu kỳ.
-    return max(0.0, latency), 0
+    return max(0.0, latency), 0, mau
 
 
 def main() -> None:

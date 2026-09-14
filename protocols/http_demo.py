@@ -166,7 +166,11 @@ def run(
         # -------------------------------------- đo độ trễ lệnh KHÔNG hẹn trước
         # Dashboard đặt lệnh lúc t=0. HTTP không đẩy xuống được, nên thiết bị
         # chỉ biết ở lần polling kế tiếp -> đây là điểm yếu cần đo.
-        report.push_latency_ms, report.push_cost_bytes = _measure_push(session, profile, link_profile)
+        (
+            report.push_latency_ms,
+            report.push_cost_bytes,
+            report.push_samples_ms,
+        ) = _measure_push(session, profile, link_profile)
 
         return report
 
@@ -175,12 +179,16 @@ def run(
             server.stop()
 
 
-def _measure_push(session, profile, link_profile: str) -> tuple[float, int]:
+def _measure_push(session, profile, link_profile: str) -> tuple[float, int, list[float]]:
     """Đo độ trễ nhận lệnh thủ công + chi phí polling.
 
     Kịch bản: dashboard bấm 'bật bơm'. Thiết bị đang polling mỗi
     CYCLE_INTERVAL giây. Độ trễ trung bình = nửa chu kỳ polling
     (lệnh đến ngẫu nhiên trong khoảng giữa 2 lần hỏi).
+
+    Khác MQTT/CoAP, con số này KHÔNG phải sự kiện mili-giây bị nhiễu mà
+    tính từ chu kỳ polling (tất định, ~250ms) nên chỉ cần một mẫu. Vẫn trả
+    về danh sách mẫu để giữ đúng khuôn dữ liệu chung của cả 3 giao thức.
     """
     # Dashboard đặt lệnh
     session.post(f"{BASE_URL}/api/garden/command", json={"pump": "TURN_ON"}, timeout=5)
@@ -197,7 +205,8 @@ def _measure_push(session, profile, link_profile: str) -> tuple[float, int]:
     # Độ trễ thực tế = nửa chu kỳ polling + thời gian một request
     avg_wait_ms = (config.CYCLE_INTERVAL * 1000.0) / 2.0
     poll_cost = poll_counter.bytes_sent + poll_counter.bytes_recv
-    return avg_wait_ms + poll_rtt, poll_cost
+    do_tre = avg_wait_ms + poll_rtt
+    return do_tre, poll_cost, [do_tre]
 
 
 def main() -> None:

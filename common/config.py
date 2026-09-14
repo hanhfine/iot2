@@ -44,5 +44,12 @@ COAP_SECURITY_PATH = "security/intrusion"
 DEVICE_ID = "esp32_garden_01"
 ZONE = "Khu vuc vuon sau"
 
+# ------------------------------------------------- đo độ trễ đẩy lệnh
+# Mỗi giao thức đo độ trễ đẩy lệnh bao nhiêu lần. Đây là sự kiện cỡ
+# mili-giây nên một mẫu duy nhất rất dễ bị nhiễu (máy bận -> mẫu vọt lên
+# vài chục ms). Nhiễu chỉ làm phép đo CHẬM ĐI, không làm nhanh lên thêm,
+# nên các demo lấy mẫu NHỎ NHẤT trong số này và lưu lại mọi mẫu để đối chiếu.
+PUSH_SAMPLES = 3
+
 # ------------------------------------------------------------- kết quả
 RESULTS_DIR = "results"

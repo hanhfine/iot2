@@ -209,26 +209,28 @@ async def _run_async(
         await asyncio.sleep(config.CYCLE_INTERVAL)
 
     # ------------------------------------ đo độ trễ lệnh KHÔNG hẹn trước
-    report.push_latency_ms, report.push_cost_bytes = await _measure_push(
-        ctx, profile, link_profile
-    )
+    (
+        report.push_latency_ms,
+        report.push_cost_bytes,
+        report.push_samples_ms,
+    ) = await _measure_push(ctx, profile, link_profile)
 
     await ctx.shutdown()
     return report
 
 
-async def _measure_push(ctx, profile, link_profile: str) -> tuple[float, int]:
-    """Đo độ trễ nhận lệnh qua OBSERVE.
+async def _mot_lan_push(ctx, profile, link_profile: str) -> float:
+    """MỘT lần đo độ trễ nhận lệnh qua Observe — trả về mili-giây.
 
     Thiết bị đăng ký observe resource lệnh. Dashboard POST lệnh mới ->
     server đẩy bản cập nhật tới thiết bị. Đo từ lúc POST tới lúc nhận.
 
-    Giống MQTT ở chỗ mốc t0 phải là lúc dashboard THỰC SỰ gửi lệnh
-    (bài học từ bước 3).
+    Mốc t0 phải là lúc dashboard THỰC SỰ gửi lệnh, không phải lúc thiết bị
+    bắt đầu chờ (bài học từ bước 3 — lấy sai mốc thì bị cộng thêm thời gian
+    nằm im chờ).
     """
     received = asyncio.Event()
     recv_at: dict = {}
-    push_bytes = ByteCounter()
 
     obs_req = Message(code=Code.GET, uri=f"{BASE_URI}/garden/command", observe=0)
     request = ctx.request(obs_req)
@@ -250,23 +252,44 @@ async def _measure_push(ctx, profile, link_profile: str) -> tuple[float, int]:
     # Dashboard gửi lệnh — ĐỒNG HỒ BẮT ĐẦU TỪ ĐÂY
     dash_ctx = await Context.create_client_context()
     t_publish = time.perf_counter()
-    with _count_datagrams(push_bytes):
-        await dash_ctx.request(_msg("garden/command", {"pump": "TURN_ON"})).response
-        try:
-            await asyncio.wait_for(received.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            pass
+    try:
+        with _count_datagrams(ByteCounter()):
+            await dash_ctx.request(_msg("garden/command", {"pump": "TURN_ON"})).response
+            try:
+                await asyncio.wait_for(received.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        await dash_ctx.shutdown()
+        watcher.cancel()
+        request.observation.cancel()
 
-    latency = (recv_at["t"] - t_publish) * 1000.0 if "t" in recv_at else 5000.0
-    await dash_ctx.shutdown()
-    watcher.cancel()
-    request.observation.cancel()
+    return (recv_at["t"] - t_publish) * 1000.0 if "t" in recv_at else 5000.0
 
+
+async def _measure_push(ctx, profile, link_profile: str) -> tuple[float, int, list[float]]:
+    """Đo độ trễ nhận lệnh qua OBSERVE, đo PUSH_SAMPLES lần rồi lấy mẫu NHỎ NHẤT.
+
+    Trả về ``(do_tre_ms, byte_polling, tat_ca_mau)``.
+
+    Vì sao nhiều mẫu: đây là sự kiện cỡ mili-giây. Chạy một mẫu duy nhất thì
+    chỉ cần hệ điều hành bận một nhịp là ra vài chục ms — đã gặp thật khi máy
+    đang chạy cả bộ test (một mẫu nhảy lên 57ms trong khi các mẫu khác ~1ms).
+    Nhiễu hệ thống CHỈ làm phép đo chậm đi, không bao giờ làm nhanh lên thêm,
+    nên mẫu nhỏ nhất qua vài lần là ước lượng sát năng lực thật của giao thức.
+    Tất cả mẫu vẫn được lưu lại (``push_samples_ms``) để ai muốn kiểm chứng
+    thì thấy ngay độ tán của phép đo.
+    """
+    mau: list[float] = []
+    for _ in range(config.PUSH_SAMPLES):
+        mau.append(await _mot_lan_push(ctx, profile, link_profile))
+
+    latency = min(mau)
     if link_profile != "ideal":
         latency += profile.transmit_delay_ms(32)
 
     # Observe không tốn byte polling — server tự gửi khi có thay đổi
-    return max(0.0, latency), 0
+    return max(0.0, latency), 0, mau
 
 
 # --------------------------------------------------------------------------

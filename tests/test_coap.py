@@ -20,23 +20,6 @@ from protocols.coap_demo import run  # noqa: E402
 BASE = f"coap://{config.COAP_HOST}:{config.COAP_PORT}"
 
 
-def _do_tre_nho_nhat(run_ham, so_lan: int = 3) -> float:
-    """Đo độ trễ đẩy lệnh vài lần, lấy giá trị NHỎ NHẤT.
-
-    Vì sao không dùng một lần đo: đây là sự kiện cỡ mili-giây, khi máy đang
-    chạy cả trăm test thì thỉnh thoảng một mẫu bị đẩy lên vài chục ms do
-    hệ điều hành bận (đã gặp thật: MQTT 57ms thay vì ~2ms).
-
-    Nhiễu hệ thống chỉ làm phép đo CHẬM ĐI, không bao giờ làm nhanh lên
-    thêm — nên min qua vài lần là ước lượng sát năng lực thật của giao thức,
-    và kết quả không còn phụ thuộc máy đang rảnh hay bận.
-    """
-    return min(
-        run_ham(cycles=2, verbose=False).summary()["push_latency_ms"]
-        for _ in range(so_lan)
-    )
-
-
 @pytest.fixture(scope="module")
 def server():
     proc = ServerProcess(
@@ -216,19 +199,9 @@ class TestCoapSoVoiCacGiaoThucKhac:
 
     def test_ca_mqtt_va_coap_deu_day_lenh_nhanh_hon_http(self, bo_ba):
         """HTTP phải chờ tới chu kỳ polling; MQTT/CoAP đẩy thẳng xuống thiết bị."""
-        from protocols.coap_demo import run as coap_run
-        from protocols.mqtt_demo import run as mqtt_run
-
-        nguong = bo_ba["HTTP"]["push_latency_ms"] / 10
-        mqtt_push = _do_tre_nho_nhat(mqtt_run)
-        coap_push = _do_tre_nho_nhat(coap_run)
-
-        assert mqtt_push < nguong, (
-            f"MQTT day lenh {mqtt_push:.1f}ms, phai duoi {nguong:.1f}ms"
-        )
-        assert coap_push < nguong, (
-            f"CoAP day lenh {coap_push:.1f}ms, phai duoi {nguong:.1f}ms"
-        )
+        http_push = bo_ba["HTTP"]["push_latency_ms"]
+        assert bo_ba["MQTT"]["push_latency_ms"] < http_push / 10
+        assert bo_ba["CoAP"]["push_latency_ms"] < http_push / 10
 
     def test_ba_giao_thuc_cung_payload(self, bo_ba):
         """Cùng kịch bản, cùng dữ liệu -> payload phải bằng nhau."""

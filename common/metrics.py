@@ -98,6 +98,9 @@ class ProtocolReport:
     push_latency_ms: float = 0.0    # độ trễ lệnh KHÔNG hẹn trước
     push_method: str = ""           # cách đẩy: subscribe / polling / observe
     push_cost_bytes: int = 0        # byte tốn thêm để duy trì khả năng nhận lệnh
+    # Tất cả mẫu đo được (không chỉ giá trị cuối) — để thấy phép đo tán ra sao
+    # và để giải thích khi có mẫu bị nhiễu hệ thống làm vọt lên.
+    push_samples_ms: list[float] = field(default_factory=list)
 
     # Byte header TCP/IP — kernel thêm vào, không thấy ở tầng socket.
     # Ước lượng theo RFC: IPv4 20B + TCP 20B = 40B/gói, UDP 20B + 8B = 28B/gói.
@@ -152,6 +155,8 @@ class ProtocolReport:
             "push_latency_ms": round(self.push_latency_ms, 2),
             "push_method": self.push_method,
             "push_cost_bytes": self.push_cost_bytes,
+            "push_samples_ms": [round(x, 2) for x in self.push_samples_ms],
+            "push_samples": len(self.push_samples_ms),
             "notes": self.notes,
         }
 
