@@ -14,3 +14,4 @@ aiocoap>=0.4.7          # cả server lẫn client CoAP
 
 # --- Kiểm thử ---
 pytest>=8.0
+matplotlib>=3.8          # ve bieu do so sanh
