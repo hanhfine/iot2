@@ -92,6 +92,17 @@ class ProtocolReport:
     cycles: list[CycleMetric] = field(default_factory=list)
     notes: str = ""
 
+    # --- khả năng server chủ động đẩy lệnh xuống thiết bị ---
+    # Đây là tiêu chí quan trọng nhất của đề tài tưới cây: khi người dùng
+    # bấm "bật bơm" trên dashboard, bao lâu thì thiết bị biết?
+    push_latency_ms: float = 0.0    # độ trễ lệnh KHÔNG hẹn trước
+    push_method: str = ""           # cách đẩy: subscribe / polling / observe
+    push_cost_bytes: int = 0        # byte tốn thêm để duy trì khả năng nhận lệnh
+
+    # Byte header TCP/IP — kernel thêm vào, không thấy ở tầng socket.
+    # Ước lượng theo RFC: IPv4 20B + TCP 20B = 40B/gói, UDP 20B + 8B = 28B/gói.
+    l3_bytes_per_packet: int = 40
+
     # ---------------------------------------------------------------- thêm
     def add(self, metric: CycleMetric) -> None:
         self.cycles.append(metric)
@@ -115,6 +126,7 @@ class ProtocolReport:
         payload = sum(c.payload_bytes for c in self.cycles)
         wire = sum(c.wire_bytes for c in self.cycles)
         packets = sum(c.packets for c in self.cycles)
+        l3 = packets * self.l3_bytes_per_packet
 
         return {
             "protocol": self.protocol,
@@ -133,8 +145,13 @@ class ProtocolReport:
             "bytes_per_cycle": round(wire / n, 1),
             "packets_total": packets,
             "packets_per_cycle": round(packets / n, 2),
+            "l3_overhead_bytes": l3,
+            "total_bytes_with_l3": wire + l3,
             "handshake_bytes": self.handshake_bytes,
             "handshake_ms": round(self.handshake_ms, 2),
+            "push_latency_ms": round(self.push_latency_ms, 2),
+            "push_method": self.push_method,
+            "push_cost_bytes": self.push_cost_bytes,
             "notes": self.notes,
         }
 
