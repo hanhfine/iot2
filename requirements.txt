@@ -1,0 +1,16 @@
+# Bộ demo so sánh giao thức IoT — MQTT / HTTP / CoAP
+# Cài: pip install -r requirements.txt
+
+# --- MQTT ---
+paho-mqtt>=2.0          # client MQTT
+amqtt>=0.11             # broker MQTT chạy nội bộ (chế độ offline)
+
+# --- HTTP ---
+flask>=3.0              # server HTTP
+requests>=2.31          # client HTTP
+
+# --- CoAP ---
+aiocoap>=0.4.7          # cả server lẫn client CoAP
+
+# --- Kiểm thử ---
+pytest>=8.0

@@ -1,0 +1,497 @@
+﻿Nghiên cứu, thiết kế và chế tạo hệ thống tưới cây thông minh tích hợp giám sát an ninh dựa trên vi điều khiển ESP32. 
+
+
+hướng dẫn kỹ thuật chi tiết theo đúng cấu trúc mẫu cho đề tài: "Nghiên cứu, thiết kế và chế tạo hệ thống tưới cây thông minh tích hợp giám sát an ninh dựa trên vi điều khiển ESP32", triển khai cả hai giao thức MQTT và HTTP.
+PHẦN 1: MÔ PHỎNG VỚI GIAO THỨC MQTT
+BƯỚC 1: Chuẩn bị môi trường trên VS Code
+1. Khởi động VS Code, chọn biểu tượng PlatformIO (con kiến) trên thanh Activity Bar.
+2. Vào PIO Home \rightarrow chọn New Project.
+3. Cấu hình thông số dự án:
+   * Name: Smart_Garden_Security
+   * Board: Espressif ESP32 Dev Module
+   * Framework: Arduino
+4. Nhấn Finish và đợi PlatformIO khởi tạo cấu trúc thư mục.
+BƯỚC 2: Cài đặt thư viện trong platformio.ini
+Mở file platformio.ini ở thư mục gốc của dự án và thay thế toàn bộ nội dung bằng cấu hình sau:
+[env:esp32dev]
+platform = espressif32
+board = esp32dev
+framework = arduino
+monitor_speed = 115200
+lib_deps =
+    knolleary/PubSubClient@^2.8
+    bblanchon/ArduinoJson@^6.21.3
+    adafruit/DHT sensor library@^1.4.4
+    adafruit/Adafruit Unified Sensor@^1.1.9
+
+
+BƯỚC 3: Thiết lập sơ đồ mạch phần cứng trong diagram.json
+Tạo file diagram.json tại thư mục gốc của dự án (cùng cấp với platformio.ini) để mô phỏng trên Wokwi:
+* Cảm biến nhiệt độ/độ ẩm không khí: DHT22 (chân GPIO 14).
+* Cảm biến độ ẩm đất: Dùng biến trở Potentiometer giả lập (chân GPIO 34).
+* Cảm biến chuyển động (PIR): Nút nhấn push-button giả lập tín hiệu phát hiện người (chân GPIO 35).
+* Rơ-le điều khiển bơm: LED xanh lá cây (chân GPIO 25).
+* Đèn cảnh báo an ninh: LED đỏ (chân GPIO 4).
+Dán nội dung JSON sau vào diagram.json:
+{
+  "version": 1,
+  "author": "Smart Garden Team",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    { "type": "wokwi-dht22", "id": "dht", "top": -120, "left": 150, "attrs": {} },
+    { "type": "wokwi-potentiometer", "id": "soil_pot", "top": 180, "left": -120, "attrs": {} },
+    { "type": "wokwi-pushbutton", "id": "pir_btn", "top": -100, "left": -80, "attrs": { "color": "blue" } },
+    { "type": "wokwi-led", "id": "led_pump", "top": 50, "left": 220, "attrs": { "color": "green", "label": "BƠM" } },
+    { "type": "wokwi-led", "id": "led_alarm", "top": 120, "left": 220, "attrs": { "color": "red", "label": "CẢNH BÁO" } },
+    { "type": "wokwi-resistor", "id": "r1", "top": 80, "left": 180, "attrs": { "value": "220" } },
+    { "type": "wokwi-resistor", "id": "r2", "top": 150, "left": 180, "attrs": { "value": "220" } }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "esp:GND.1", "dht:GND", "black", [ "v0" ] ],
+    [ "esp:3V3", "dht:VCC", "red", [ "v0" ] ],
+    [ "esp:14", "dht:SDA", "green", [ "v0" ] ],
+    [ "esp:GND.2", "soil_pot:GND", "black", [ "v0" ] ],
+    [ "esp:3V3", "soil_pot:VCC", "red", [ "v0" ] ],
+    [ "esp:34", "soil_pot:SIG", "blue", [ "v0" ] ],
+    [ "esp:GND.1", "pir_btn:1.l", "black", [ "v0" ] ],
+    [ "esp:35", "pir_btn:2.r", "orange", [ "v0" ] ],
+    [ "esp:25", "r1:1", "green", [ "v0" ] ],
+    [ "r1:2", "led_pump:A", "green", [ "v0" ] ],
+    [ "led_pump:C", "esp:GND.2", "black", [ "v0" ] ],
+    [ "esp:4", "r2:1", "red", [ "v0" ] ],
+    [ "r2:2", "led_alarm:A", "red", [ "v0" ] ],
+    [ "led_alarm:C", "esp:GND.2", "black", [ "v0" ] ]
+  ]
+}
+
+
+BƯỚC 4: Viết mã nguồn điều khiển cho ESP32 trong src/main.cpp
+Vào thư mục src/ \rightarrow mở file main.cpp, xóa toàn bộ nội dung cũ và dán đoạn mã sau:
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <DHT.h>
+#include <ArduinoJson.h>
+
+
+// Định nghĩa chân GPIO
+#define DHTPIN 14
+#define DHTTYPE DHT22
+#define SOIL_PIN 34
+#define PIR_PIN 35
+#define PUMP_RELAY_PIN 25
+#define ALARM_LED_PIN 4
+
+
+// Thông số WiFi Wokwi
+const char* ssid = "Wokwi-GUEST";
+const char* password = "";
+
+
+// Cấu hình MQTT Broker công cộng
+const char* mqtt_server = "broker.emqx.io";
+const int mqtt_port = 1883;
+
+
+// MQTT Topics
+const char* TOPIC_TELEMETRY = "smartgarden/v1/telemetry";
+const char* TOPIC_SECURITY = "smartgarden/v1/security";
+const char* TOPIC_COMMAND = "smartgarden/v1/command";
+
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+DHT dht(DHTPIN, DHTTYPE);
+
+
+unsigned long lastSend = 0;
+bool isAutoMode = true;
+bool pumpState = false;
+
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  String message = "";
+  for (int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  Serial.print("[MQTT IN] Topic: ");
+  Serial.print(topic);
+  Serial.print(" | Message: ");
+  Serial.println(message);
+
+
+  StaticJsonDocument<200> doc;
+  DeserializationError error = deserializeJson(doc, message);
+  if (error) return;
+
+
+  if (doc.containsKey("pump")) {
+    String cmd = doc["pump"].as<String>();
+    if (cmd == "ON") {
+      isAutoMode = false;
+      pumpState = true;
+    } else if (cmd == "OFF") {
+      isAutoMode = false;
+      pumpState = false;
+    } else if (cmd == "AUTO") {
+      isAutoMode = true;
+    }
+    digitalWrite(PUMP_RELAY_PIN, pumpState ? HIGH : LOW);
+  }
+}
+
+
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Dang ket noi MQTT Broker...");
+    String clientId = "ESP32_Garden_" + String(random(0xffff), HEX);
+    if (client.connect(clientId.c_str())) {
+      Serial.println(" Thanh cong!");
+      client.subscribe(TOPIC_COMMAND);
+    } else {
+      Serial.print(" That bai, rc=");
+      Serial.print(client.state());
+      Serial.println(" Thu lai sau 3s...");
+      delay(3000);
+    }
+  }
+}
+
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(SOIL_PIN, INPUT);
+  pinMode(PIR_PIN, INPUT);
+  pinMode(PUMP_RELAY_PIN, OUTPUT);
+  pinMode(ALARM_LED_PIN, OUTPUT);
+
+
+  digitalWrite(PUMP_RELAY_PIN, LOW);
+  digitalWrite(ALARM_LED_PIN, LOW);
+
+
+  dht.begin();
+
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi da ket noi!");
+
+
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+}
+
+
+void loop() {
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+
+  // 1. Kiểm tra cảm biến PIR (An ninh) liên tục
+  int pirState = digitalRead(PIR_PIN);
+  if (pirState == HIGH) {
+    digitalWrite(ALARM_LED_PIN, HIGH);
+    StaticJsonDocument<200> alertDoc;
+    alertDoc["device_id"] = "esp32_sec_01";
+    alertDoc["event"] = "MOTION_DETECTED";
+    alertDoc["alert_level"] = "CRITICAL";
+    alertDoc["timestamp"] = millis();
+
+
+    char alertBuffer[256];
+    serializeJson(alertDoc, alertBuffer);
+    client.publish(TOPIC_SECURITY, alertBuffer);
+    delay(500); 
+  } else {
+    digitalWrite(ALARM_LED_PIN, LOW);
+  }
+
+
+  // 2. Đọc và gửi dữ liệu môi trường chu kỳ 3 giây
+  unsigned long now = millis();
+  if (now - lastSend > 3000) {
+    lastSend = now;
+
+
+    float t = dht.readTemperature();
+    float h = dht.readHumidity();
+    int soilRaw = analogRead(SOIL_PIN);
+    // Ánh xạ ADC 12-bit (0-4095) về % độ ẩm đất (0 - 100%)
+    int soilMoisture = map(soilRaw, 4095, 0, 0, 100);
+    soilMoisture = constrain(soilMoisture, 0, 100);
+
+
+    // Xử lý tự động bật/tắt bơm theo ngưỡng độ ẩm
+    if (isAutoMode) {
+      if (soilMoisture < 40) {
+        pumpState = true;
+      } else if (soilMoisture > 70) {
+        pumpState = false;
+      }
+      digitalWrite(PUMP_RELAY_PIN, pumpState ? HIGH : LOW);
+    }
+
+
+    StaticJsonDocument<256> teleDoc;
+    teleDoc["temp"] = isnan(t) ? 0.0 : round(t * 10) / 10.0;
+    teleDoc["humid"] = isnan(h) ? 0.0 : round(h * 10) / 10.0;
+    teleDoc["soil_moist"] = soilMoisture;
+    teleDoc["pump_status"] = pumpState ? "ON" : "OFF";
+    teleDoc["mode"] = isAutoMode ? "AUTO" : "MANUAL";
+
+
+    char teleBuffer[256];
+    serializeJson(teleDoc, teleBuffer);
+    client.publish(TOPIC_TELEMETRY, teleBuffer);
+    Serial.println("[MQTT OUT] Cap nhat du lieu thanh cong.");
+  }
+}
+
+
+Bấm vào dấu tích ✓ (Build) ở thanh trạng thái để biên dịch chương trình và đảm bảo xuất hiện thông báo [SUCCESS].
+BƯỚC 5: Ứng dụng Server/Client giám sát bằng Python
+Mở Terminal của VS Code, cài đặt thư viện MQTT:
+pip install paho-mqtt
+
+
+Tạo file sub_smart_garden.py ở thư mục gốc của dự án:
+import paho.mqtt.client as mqtt
+import json
+from datetime import datetime
+
+
+BROKER = "broker.emqx.io"
+PORT = 1883
+TOPIC_TELEMETRY = "smartgarden/v1/telemetry"
+TOPIC_SECURITY = "smartgarden/v1/security"
+TOPIC_COMMAND = "smartgarden/v1/command"
+
+
+def on_connect(client, userdata, flags, rc):
+    print("=" * 60)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] KET NOI THANH CONG BROKER: {BROKER}")
+    print("=" * 60)
+    client.subscribe([(TOPIC_TELEMETRY, 0), (TOPIC_SECURITY, 0)])
+
+
+def on_message(client, userdata, msg):
+    payload_str = msg.payload.decode("utf-8")
+    try:
+        data = json.loads(payload_str)
+        now = datetime.now().strftime('%H:%M:%S')
+
+
+        if msg.topic == TOPIC_SECURITY:
+            print(f"\n🚨 [{now}] CANH BAO AN NINH! PHAT HIEN XAM NHAP!")
+            print(f"   Chi tiet: Device={data.get('device_id')} | Level={data.get('alert_level')}")
+            print("-" * 60)
+
+
+        elif msg.topic == TOPIC_TELEMETRY:
+            print(f"[{now} Telemetry] Do am dat: {data.get('soil_moist')}% | "
+                  f"Nhiet do: {data.get('temp')}°C | "
+                  f"Do am KK: {data.get('humid')}% | "
+                  f"Bom: {data.get('pump_status')} [{data.get('mode')}]")
+    except Exception as e:
+        print(f"Loi phan tich du lieu: {e}")
+
+
+client = mqtt.Client()
+client.on_connect = on_connect
+client.on_message = on_message
+
+
+client.connect(BROKER, PORT, 60)
+print("[DASHBOARD] He thong giam sat vuon thong minh san sang...")
+client.loop_forever()
+
+
+BƯỚC 6: Khởi chạy và kiểm thử kịch bản mô phỏng
+Chạy Server Python: Mở Terminal trong VS Code và chạy lệnh:
+python sub_smart_garden.py
+1.  Terminal hiển thị: [DASHBOARD] He thong giam sat vuon thong minh san sang...
+2. Chạy mô phỏng ESP32:
+   * Mở file diagram.json, chuyển qua chế độ xem đồ họa (Wokwi Diagram Editor).
+   * Bấm nút Play (Xanh lá).
+   * Chờ ESP32 kết nối Wokwi-GUEST và kết nối đến EMQX Broker.
+3. Kiểm thử các kịch bản:
+   * Kịch bản 1 (Tưới tự động): Vặn biến trở soil_pot xuống thấp để độ ẩm đất giảm xuống dưới 40\%. LED màu xanh (BƠM) sáng lên, Terminal Python hiển thị trạng thái Bom: ON. Vặn ngược lại để độ ẩm vượt quá 70\%, LED xanh tắt (Bom: OFF).
+   * Kịch bản 2 (Cảnh báo an ninh): Nhấn giữ nút nhấn xanh dương (pir_btn) để giả lập có người di chuyển qua cảm biến PIR. LED đỏ (CẢNH BÁO) sáng rực và trên Terminal Python lập tức xuất hiện dòng cảnh báo đỏ 🚨 CẢNH BÁO AN NINH! PHÁT HIỆN XÂM NHẬP! với độ trễ thấp.
+PHẦN 2: MÔ PHỎNG VỚI GIAO THỨC HTTP
+BƯỚC 1: Chuẩn bị môi trường trên VS Code
+1. Tạo một thư mục làm việc mới tên là http_smart_garden.
+2. Mở thư mục này bằng VS Code.
+Mở Terminal tích hợp và cài đặt các thư viện:
+pip install flask requests
+3. BƯỚC 2: Thiết kế giao thức HTTP (API Spec)
+* API 1: Đẩy dữ liệu giám sát & Điều khiển bơm tự động
+   * Method: POST
+   * Endpoint: /api/garden/telemetry
+   * Headers: Content-Type: application/json
+Request Body:
+{
+  "device_id": "esp32_garden_01",
+  "soil_moisture": 32.5,
+  "temperature": 28.4,
+  "humidity": 65.0
+}
+   * Response Body (200 OK):
+{
+  "status": "success",
+  "pump_action": "TURN_ON",
+  "message": "Do am dat thap, kich hoat he thong tuoi."
+}
+   * * API 2: Cảnh báo an ninh khẩn cấp
+   * Method: POST
+   * Endpoint: /api/security/intrusion-alert
+Request Body:
+{
+  "device_id": "esp32_garden_01",
+  "motion_detected": true,
+  "zone": "Khu vuc vuon sau"
+}
+   * BƯỚC 3: Viết mã nguồn
+Tạo 2 file trong thư mục dự án:
+1. File http_server.py (Hệ thống Server trung tâm)
+from flask import Flask, request, jsonify
+from datetime import datetime
+
+
+app = Flask(__name__)
+
+
+@app.route('/api/garden/telemetry', methods=['POST'])
+def handle_telemetry():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Invalid payload"}), 400
+
+
+    soil = data.get("soil_moisture", 0)
+    temp = data.get("temperature", 0)
+    humid = data.get("humidity", 0)
+    now = datetime.now().strftime('%H:%M:%S')
+
+
+    # Logic quyết định đóng/ngắt tưới từ phía máy chủ
+    if soil < 40:
+        pump_action = "TURN_ON"
+        msg = "Do am thap. Yeu cau bat may bom!"
+    elif soil > 70:
+        pump_action = "TURN_OFF"
+        msg = "Do am dat du. Yeu cau tat may bom!"
+    else:
+        pump_action = "MAINTAIN"
+        msg = "Trang thai binh thuong."
+
+
+    print(f"[{now} HTTP Telemetry] Dat: {soil}% | Temp: {temp}°C | Humid: {humid}% -> LENH: {pump_action}")
+
+
+    return jsonify({
+        "status": "SUCCESS",
+        "timestamp": now,
+        "pump_action": pump_action,
+        "message": msg
+    }), 200
+
+
+@app.route('/api/security/intrusion-alert', methods=['POST'])
+def handle_security():
+    data = request.get_json()
+    now = datetime.now().strftime('%H:%M:%S')
+    
+    if data.get("motion_detected"):
+        print(f"\n🚨🚨🚨 [{now} HTTP SECURITY] PHAT HIEN CO NGUOI XAM NHAP!")
+        print(f"     Thiet bi: {data.get('device_id')} | Khu vuc: {data.get('zone')}\n")
+        return jsonify({"status": "ACK", "action": "ALARM_TRIGGERED"}), 200
+
+
+    return jsonify({"status": "NORMAL"}), 200
+
+
+if __name__ == '__main__':
+    print("[SERVER] HTTP Server dang khoi chay tren port 5000...")
+    app.run(host='0.0.0.0', port=5000, debug=False)
+
+
+2. File http_client.py (Giả lập Node cảm biến ESP32 gửi HTTP Request)
+import requests
+import time
+import random
+
+
+SERVER_URL = "http://127.0.0.1:5000"
+
+
+def simulate_esp32_garden():
+    print("[CLIENT] Node ESP32 khoi chay...")
+    
+    # Mo phong chu trinh doc cam bien va day du lieu
+    soil_sim = 55.0
+    
+    for cycle in range(1, 15):
+        # Gia lap do am dat giam dan theo thoi gian
+        soil_sim -= random.uniform(2.0, 5.0)
+        temp_sim = round(random.uniform(27.0, 32.0), 1)
+        humid_sim = round(random.uniform(60.0, 75.0), 1)
+        
+        # 1. Gui telemetry
+        tele_payload = {
+            "device_id": "esp32_client_01",
+            "soil_moisture": round(soil_sim, 1),
+            "temperature": temp_sim,
+            "humidity": humid_sim
+        }
+        
+        try:
+            res = requests.post(f"{SERVER_URL}/api/garden/telemetry", json=tele_payload, timeout=2)
+            if res.status_code == 200:
+                resp_json = res.json()
+                action = resp_json.get("pump_action")
+                print(f"[CLIENT Cycle {cycle}] Gui thanh cong -> Phan hoi: {action}")
+                if action == "TURN_ON":
+                    print(">>> [ACTUATOR] RELAY BAT MAY BOM! <<<")
+                    soil_sim = 75.0 # Sau khi bom, dat am tro lai
+        except Exception as e:
+            print(f"[CLIENT] Loi ket noi: {e}")
+
+
+        # 2. Ngau nhien kich hoat xam nhap sau moi 5 chu ky
+        if cycle % 5 == 0:
+            print("[SENSOR] PIR phat hien chuyen dong! Gui Request khan cap...")
+            sec_payload = {
+                "device_id": "esp32_client_01",
+                "motion_detected": True,
+                "zone": "Khu vuc vuon truoc"
+            }
+            try:
+                requests.post(f"{SERVER_URL}/api/security/intrusion-alert", json=sec_payload, timeout=2)
+            except Exception as e:
+                print(f"[CLIENT] Loi ket noi: {e}")
+
+
+        time.sleep(3)
+
+
+if __name__ == '__main__':
+    simulate_esp32_garden()
+
+
+BƯỚC 4: Chạy mô phỏng HTTP trong VS Code
+Mở Terminal 1, khởi chạy HTTP Server:
+python http_server.py
+1.  Màn hình xuất hiện thông báo server lắng nghe tại port 5000: Running on [http://127.0.0.1:5000](http://127.0.0.1:5000).
+Mở một Terminal khác bằng cách bấm nút + (New Terminal) trong VS Code, khởi chạy Client:
+python http_client.py
+2. 3. Quan sát kết quả:
+   * Client định kỳ gửi các chỉ số qua HTTP POST. Khi độ ẩm đất giảm dưới ngưỡng 40\%, server gửi lệnh TURN_ON trong thân HTTP response; phía client lập tức kích hoạt rơ-le bơm ảo và cập nhật lại độ ẩm đất.
+   * Khi đến chu kỳ phát hiện chuyển động, một HTTP POST cảnh báo được gửi đến /api/security/intrusion-alert, server lập tức in log cảnh báo xâm nhập.
